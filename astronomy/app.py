@@ -8,14 +8,21 @@ import os
 
 load_dotenv()
 BASE_URL = os.getenv('BASE_URL', 'http://localhost:8000/api')
+try:
+    from api_key import API_KEY as LOCAL_API_KEY
+except ImportError:
+    LOCAL_API_KEY = ""
 
-api_key_input = st.text_input("Enter API Key", type="password")
+AUTH_API_KEY = os.getenv('API_KEY') or LOCAL_API_KEY
+
+# Set page config
+st.set_page_config(page_title="APOD Personal Gallery", layout="wide")
 
 
-def validate_api_key(api_key):
-    headers = {"api-key": api_key}
-    response = requests.get(f"{BASE_URL}/validate_key/", headers=headers)
-    return response.status_code == 200
+def api_headers():
+    if AUTH_API_KEY:
+        return {"api-key": AUTH_API_KEY}
+    return None
 
 
 # ---------- Categories ----------
@@ -221,20 +228,35 @@ def images_dashboard(api_key):
 
 # ---------- Visualizations + Gallery Dashboard ----------
 def visualizations_dashboard():
-    st.title("Gallery & Visualizations")
+    st.title("📊 Gallery & Visualizations")
+    st.markdown("*Browse and explore your archived images*")
+    st.divider()
 
-    images = get_images()
-    categories = get_categories()
+    try:
+        images = get_images()
+        categories = get_categories()
+    except Exception as e:
+        st.error(f"Could not connect to API: {e}")
+        st.info("Make sure FastAPI is running: `uvicorn main:app --reload`")
+        return
 
     if not images:
-        st.warning("No image data available yet. Run apod_scraper.py + database.py to populate the archive.")
+        st.warning("No image data available yet.")
+        with st.expander("📖 How to populate the archive:"):
+            st.markdown("""
+            1. **Setup environment**: `cp .env.example .env` and edit with your NASA_API_KEY
+            2. **Initialize database**: `python -c "from database import create_database; create_database()"`
+            3. **Fetch APOD data**: `python -c "from apod_scraper import scrape_apod_range; from datetime import date, timedelta; scrape_apod_range(date.today() - timedelta(days=14), date.today())"`
+            4. **Start API**: In a terminal run `uvicorn main:app --reload`
+            5. **Refresh this page**
+            """)
         return
 
     df_images = pd.DataFrame(images)
     category_id_to_name = {c['id']: c['name'] for c in categories}
     df_images['category'] = df_images['category_id'].map(category_id_to_name)
 
-    st.sidebar.title("Filters")
+    st.sidebar.title("🔍 Filters")
     selected_category = st.sidebar.selectbox("Select Category", options=["All"] + list(category_id_to_name.values()))
     min_year = int(df_images['year'].min())
     max_year = int(df_images['year'].max())
@@ -282,17 +304,309 @@ def visualizations_dashboard():
                 st.write(row.get('explanation', ''))
 
 
+# ---------- Favorites Gallery Dashboard ----------
+def favorites_gallery():
+    """Display personal favorites with ratings and timeline."""
+    st.title("⭐ Personal Favorites Gallery")
+    st.markdown("*Your curated collection of astronomy's greatest moments*")
+    st.divider()
+
+    try:
+        images = get_images()
+        categories = get_categories()
+    except Exception as e:
+        st.error(f"Could not connect to API: {e}")
+        st.info("Make sure FastAPI is running: `uvicorn main:app --reload`")
+        return
+
+    if not images:
+        st.info("No images in your gallery yet. Use the 'Manage Images' section to add some!")
+        return
+
+    df_images = pd.DataFrame(images)
+    category_id_to_name = {c['id']: c['name'] for c in categories}
+    df_images['category'] = df_images['category_id'].map(category_id_to_name)
+
+    # Sidebar filters
+    st.sidebar.title("🔍 Filter & Sort")
+    
+    # Filter by rating (favorites first)
+    min_rating = st.sidebar.slider("Minimum Rating", 0.0, 5.0, 0.0, step=0.5)
+    
+    # Filter by category
+    categories_list = sorted(set(df_images['category']))
+    selected_categories = st.sidebar.multiselect("Categories", categories_list, default=categories_list)
+    
+    # Filter by year
+    min_year = int(df_images['year'].min())
+    max_year = int(df_images['year'].max())
+    selected_year_range = st.sidebar.slider("Year Range", min_year, max_year, (min_year, max_year))
+    
+    # Sort options
+    sort_by = st.sidebar.selectbox("Sort By", ["Rating (High to Low)", "Rating (Low to High)", "Date (Newest)", "Date (Oldest)"])
+
+    # Apply filters
+    filtered = df_images.copy()
+    filtered = filtered[filtered['rating'] >= min_rating]
+    filtered = filtered[filtered['category'].isin(selected_categories)]
+    filtered = filtered[(filtered['year'] >= selected_year_range[0]) & (filtered['year'] <= selected_year_range[1])]
+
+    # Apply sorting
+    if sort_by == "Rating (High to Low)":
+        filtered = filtered.sort_values('rating', ascending=False)
+    elif sort_by == "Rating (Low to High)":
+        filtered = filtered.sort_values('rating', ascending=True)
+    elif sort_by == "Date (Newest)":
+        filtered = filtered.sort_values('capture_date', ascending=False)
+    else:  # Date (Oldest)
+        filtered = filtered.sort_values('capture_date', ascending=True)
+
+    if filtered.empty:
+        st.warning("No images match your filters.")
+        return
+
+    # Display stats
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total in Collection", len(filtered))
+    with col2:
+        avg_rating = filtered['rating'].mean()
+        st.metric("Average Rating", f"{avg_rating:.1f}/5.0")
+    with col3:
+        favorites = len(filtered[filtered['rating'] >= 4.0])
+        st.metric("Top Favorites (4+)", favorites)
+    with col4:
+        year_range_str = f"{filtered['year'].min()}-{filtered['year'].max()}"
+        st.metric("Span", year_range_str)
+
+    st.divider()
+
+    # Gallery display with 3-column layout
+    st.markdown("### ✨ Gallery")
+    cols = st.columns(3)
+    for i, (_, row) in enumerate(filtered.iterrows()):
+        col = cols[i % 3]
+        with col:
+            # Image card with visual feedback for rating
+            rating_stars = "⭐" * int(row['rating']) + "☆" * (5 - int(row['rating']))
+            
+            st.image(row['image_url'], use_container_width=True)
+            st.markdown(f"**{row['title']}**")
+            st.caption(f"{row['capture_date']} • {row['year']} • {row['category']}")
+            
+            with st.expander(f"View Details {rating_stars}"):
+                st.write(f"**Rating:** {row['rating']}/5.0")
+                st.write(f"**Category:** {row['category']}")
+                if row['topics']:
+                    st.write(f"**Topics:** {', '.join(row['topics'])}")
+                st.write(f"**Explanation:**")
+                st.write(row.get('explanation', 'No explanation available.'))
+                
+                if AUTH_API_KEY:
+                    col_edit, col_del = st.columns(2)
+                    with col_edit:
+                        if st.button("✏️ Edit", key=f"edit_{row['id']}"):
+                            st.session_state.edit_image_id = row['id']
+                    with col_del:
+                        if st.button("🗑️ Delete", key=f"del_{row['id']}"):
+                            delete_image(AUTH_API_KEY, row['id'])
+                            st.rerun()
+
+
+# ---------- Archive & Statistics Dashboard ----------
+def archive_dashboard():
+    """Browse archive with rich statistics and filtering."""
+    st.title("📚 Archive & Statistics")
+    st.markdown("*Explore your astronomy collection over time*")
+    st.divider()
+
+    try:
+        images = get_images()
+        categories = get_categories()
+    except Exception as e:
+        st.error(f"Could not connect to API: {e}")
+        return
+
+    if not images:
+        st.info("Your archive is empty. Add images to get started!")
+        return
+
+    df_images = pd.DataFrame(images)
+    category_id_to_name = {c['id']: c['name'] for c in categories}
+    df_images['category'] = df_images['category_id'].map(category_id_to_name)
+
+    # Tabs for different views
+    tab1, tab2, tab3 = st.tabs(["📊 Statistics", "🗂️ By Category", "📅 Timeline"])
+
+    with tab1:
+        st.subheader("Collection Overview")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Images", len(df_images))
+        with col2:
+            st.metric("Years Covered", f"{df_images['year'].min()}-{df_images['year'].max()}")
+        with col3:
+            st.metric("Unique Categories", df_images['category'].nunique())
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### Rating Distribution")
+            fig_rating = px.histogram(df_images, x='rating', nbins=10, 
+                                     title="Images by Your Rating",
+                                     labels={"rating": "Rating", "count": "Count"})
+            st.plotly_chart(fig_rating, use_container_width=True)
+        
+        with col2:
+            st.markdown("#### Top Categories")
+            top_cats = df_images['category'].value_counts().head(10)
+            fig_cat = px.bar(x=top_cats.values, y=top_cats.index, orientation='h',
+                            title="Top 10 Categories",
+                            labels={"x": "Count", "y": "Category"})
+            st.plotly_chart(fig_cat, use_container_width=True)
+
+        # Images by year
+        st.markdown("#### Images by Year")
+        images_by_year = df_images.groupby('year').size().reset_index(name='Count')
+        fig_year = px.line(images_by_year, x='year', y='Count',
+                          title="Archive Growth Over Time", markers=True)
+        st.plotly_chart(fig_year, use_container_width=True)
+
+    with tab2:
+        st.subheader("Browse by Category")
+        categories_list = sorted(df_images['category'].unique())
+        
+        for category in categories_list:
+            cat_images = df_images[df_images['category'] == category]
+            avg_rating = cat_images['rating'].mean()
+            
+            with st.expander(f"📌 {category} ({len(cat_images)} images, avg rating: {avg_rating:.1f})"):
+                # Show images in this category
+                cols = st.columns(3)
+                for i, (_, row) in enumerate(cat_images.iterrows()):
+                    with cols[i % 3]:
+                        st.image(row['image_url'], use_container_width=True)
+                        st.caption(f"{row['title']} ({row['year']}) - {row['rating']}/5.0")
+
+    with tab3:
+        st.subheader("Timeline View")
+        # Sort by date
+        df_timeline = df_images.sort_values('capture_date', ascending=False)
+        
+        for _, row in df_timeline.iterrows():
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                st.image(row['image_url'], width=100)
+            with col2:
+                rating_stars = "⭐" * int(row['rating'])
+                st.markdown(f"**{row['title']}** {rating_stars}")
+                st.caption(f"{row['capture_date']} • {row['category']}")
+                st.write(row.get('explanation', '')[:200] + "...")
+                if st.button("View Full", key=f"timeline_{row['id']}"):
+                    st.session_state.selected_image_id = row['id']
+
+
 # Main app logic
-st.sidebar.title("Navigation")
-option = st.sidebar.selectbox("Choose a dashboard", ["Categories Dashboard", "Images Dashboard", "Gallery & Visualizations"])
+st.title("🌌 APOD Personal Gallery")
+st.markdown("*Daily images from NASA's Astronomy Picture of the Day — rate, categorize, and build your personal favorites collection*")
+st.divider()
 
-if option == "Gallery & Visualizations":
-    visualizations_dashboard()
+if not AUTH_API_KEY:
+    st.warning("⚠️ No API key found. Add your key to `.env` or `astronomy/api_key.py` to enable image management.")
 
-if api_key_input and validate_api_key(api_key_input):
-    if option == "Categories Dashboard":
-        categories_dashboard(api_key_input)
-    elif option == "Images Dashboard":
-        images_dashboard(api_key_input)
-elif option in ["Categories Dashboard", "Images Dashboard"]:
-    st.error("Invalid API Key or API Key is missing.")
+# Sidebar navigation
+with st.sidebar:
+    st.divider()
+    st.title("📍 Navigation")
+    page = st.radio(
+        "Choose a view",
+        ["⭐ Favorites", "📚 Archive", "🛠️ Manage", "📚 Categories"],
+        help="Explore your personal astronomy collection"
+    )
+
+# Render selected page
+if page == "⭐ Favorites":
+    favorites_gallery()
+
+elif page == "📚 Archive":
+    archive_dashboard()
+
+elif page == "🛠️ Manage":
+    if AUTH_API_KEY:
+        st.title("🛠️ Manage Your Collection")
+        st.markdown("*Add, edit, or delete images from your archive*")
+        st.divider()
+        
+        sub_page = st.radio("Choose action", ["Add Image", "Edit Image", "View All"])
+        
+        if sub_page == "Add Image":
+            images_dashboard(AUTH_API_KEY)
+        elif sub_page == "Edit Image":
+            try:
+                images = get_images()
+                categories = get_categories()
+                if images:
+                    st.markdown("### Edit Existing Image")
+                    selected_title = st.selectbox("Select Image", options=[img['title'] for img in images])
+                    img = next((i for i in images if i['title'] == selected_title), None)
+                    if img:
+                        category_id_to_name = {c['id']: c['name'] for c in categories}
+                        cat_name = category_id_to_name.get(img['category_id'], categories[0]['name'] if categories else "")
+                        cat_names = [c['name'] for c in categories]
+                        
+                        new_rating = st.slider("Update Rating", 0.0, 5.0, float(img['rating']), 0.5)
+                        update_button = st.button("Update Rating")
+                        
+                        if update_button:
+                            selected_category_id = next((c['id'] for c in categories if c['name'] == cat_name), None)
+                            image_data = {
+                                "title": img['title'],
+                                "category_id": selected_category_id,
+                                "image_url": img['image_url'],
+                                "explanation": img.get('explanation', ''),
+                                "topics": img.get('topics', []),
+                                "capture_date": img.get('capture_date', ''),
+                                "year": img['year'],
+                                "rating": new_rating
+                            }
+                            update_image(AUTH_API_KEY, img['id'], image_data)
+                            st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
+        else:  # View All
+            try:
+                images = get_images()
+                categories = get_categories()
+                if images:
+                    category_map = {c['id']: c['name'] for c in categories}
+                    table_rows = []
+                    for img in images:
+                        row = dict(img)
+                        row['category'] = category_map.get(row['category_id'], 'Unknown')
+                        row['topics'] = ', '.join(row['topics']) if row['topics'] else ''
+                        table_rows.append(row)
+                    df = pd.DataFrame(table_rows)
+                    display_cols = [c for c in ['id', 'title', 'category', 'rating', 'year', 'capture_date'] if c in df.columns]
+                    st.dataframe(df[display_cols], use_container_width=True)
+            except Exception as e:
+                st.error(f"Error: {e}")
+    else:
+        st.warning("Image management is disabled. Configure an API key first.")
+
+elif page == "📚 Categories":
+    if AUTH_API_KEY:
+        categories_dashboard(AUTH_API_KEY)
+    else:
+        st.warning("Category management is disabled. Configure an API key first.")
+        st.divider()
+        st.subheader("📚 Available Categories")
+        try:
+            categories = get_categories()
+            if categories:
+                cols = st.columns(3)
+                for i, cat in enumerate(categories):
+                    with cols[i % 3]:
+                        st.info(f"📌 {cat['name']}")
+            else:
+                st.info("No categories configured yet.")
+        except Exception as e:
+            st.error(f"Could not fetch categories: {e}")

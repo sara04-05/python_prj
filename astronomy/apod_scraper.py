@@ -1,15 +1,16 @@
 """
-Scrapes NASA's Astronomy Picture of the Day (APOD) API for a date range,
-auto-classifies each entry into a category (Galaxy, Nebula, Planet, etc.)
+Scrapes NASA's Astronomy Picture of the Day (APOD) from the official
+WordPress API endpoint: https://science.nasa.gov/wp-json/wp/v2/apod-basic/
+
+Auto-classifies each entry into a category (Galaxy, Nebula, Planet, etc.)
 based on keywords in the title/explanation, and extracts topic tags
 (the "genres" equivalent).
 
-Get a free API key at https://api.nasa.gov (instant, no approval wait).
-Without one, NASA's shared DEMO_KEY works but is rate-limited to
-30 requests/hour and 50/day - fine for testing, not for bulk backfills.
+Uses NASA's public WordPress API - no API key required!
 """
 import os
 import time
+import re
 from datetime import date, timedelta
 
 import requests
@@ -17,8 +18,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-APOD_URL = "https://api.nasa.gov/planetary/apod"
-NASA_API_KEY = os.getenv("NASA_API_KEY", "DEMO_KEY")
+# NASA APOD WordPress API endpoint (no API key needed!)
+APOD_URL = "https://science.nasa.gov/wp-json/wp/v2/apod-basic/"
+NASA_API_KEY = os.getenv("NASA_API_KEY", "")  # Not needed for this endpoint
 
 # Keyword -> category classification. Checked in order against the
 # lowercased title + explanation; first match wins. This is a simple
@@ -75,51 +77,117 @@ def extract_topics(title, explanation):
     return topics or ["Uncategorized"]
 
 
+def fetch_apod_wordpress():
+    """Fetch APOD entries from NASA's WordPress API.
+    Returns a list of entries."""
+    try:
+        response = requests.get(APOD_URL, timeout=15)
+        if response.status_code != 200:
+            return []
+        data = response.json()
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"Error fetching APOD data: {e}")
+        return []
+
+
+def parse_wordpress_apod(post):
+    """Parse a single WordPress APOD post into our format.
+    Returns dict with title, explanation, url, date, or None if invalid."""
+    try:
+        title = post.get("title", {}).get("rendered", "Untitled").strip()
+        content = post.get("content", {}).get("rendered", "")
+        explanation = content
+        
+        # Find featured image URL
+        image_url = None
+        if post.get("featured_media_src_url"):
+            image_url = post.get("featured_media_src_url")
+        elif post.get("better_featured_image", {}).get("source_url"):
+            image_url = post.get("better_featured_image", {}).get("source_url")
+        
+        # Fallback: extract first image from content
+        if not image_url and "<img" in content:
+            match = re.search(r'src="([^"]+)"', content)
+            if match:
+                image_url = match.group(1)
+        
+        if not image_url:
+            return None
+        
+        # Parse date
+        date_str = post.get("date_gmt") or post.get("date")
+        if date_str:
+            try:
+                post_date = date.fromisoformat(date_str.split("T")[0])
+            except:
+                post_date = date.today()
+        else:
+            post_date = date.today()
+        
+        return {
+            "title": title,
+            "explanation": explanation,
+            "url": image_url,
+            "date": post_date,
+            "year": post_date.year
+        }
+    except Exception as e:
+        print(f"Error parsing APOD post: {e}")
+        return None
+
+
 def fetch_apod(day):
     """Fetch a single day's APOD entry. Returns None on failure (e.g. the
     date has no entry, or media_type is 'video' instead of an image)."""
-    params = {"api_key": NASA_API_KEY, "date": day.isoformat()}
-    response = requests.get(APOD_URL, params=params, timeout=15)
-    if response.status_code != 200:
-        return None
-    data = response.json()
-    if data.get("media_type") != "image":
-        return None
-    return data
+    # Legacy function - kept for compatibility
+    posts = fetch_apod_wordpress()
+    for post in posts:
+        parsed = parse_wordpress_apod(post)
+        if parsed and parsed["date"] == day:
+            return parsed
+    return None
 
 
 def scrape_apod_range(start_date, end_date):
     """
-    Scrapes APOD entries for every day between start_date and end_date
-    (inclusive). Returns (images_dict, categories) matching the same
-    shape books_scraper.py produces: a dict keyed by (title, category)
-    and a list of unique category names.
+    Scrapes APOD entries from WordPress API, filters by date range.
+    Returns (images_dict, categories) matching the same shape:
+    a dict keyed by (title, category) and a list of unique category names.
     """
     images_dict = {}
     categories = []
 
-    current = start_date
-    while current <= end_date:
-        entry = fetch_apod(current)
-        if entry:
-            title = entry.get("title", "Untitled").strip()
-            explanation = entry.get("explanation", "")
-            category = classify_category(title, explanation)
-            topics = extract_topics(title, explanation)
+    # Fetch all available APOD entries from WordPress
+    posts = fetch_apod_wordpress()
+    print(f"Fetched {len(posts)} posts from NASA APOD API")
+    
+    for post in posts:
+        parsed = parse_wordpress_apod(post)
+        if not parsed:
+            continue
+        
+        # Filter by date range
+        post_date = parsed["date"]
+        if not (start_date <= post_date <= end_date):
+            continue
+        
+        title = parsed["title"]
+        explanation = parsed["explanation"]
+        category = classify_category(title, explanation)
+        topics = extract_topics(title, explanation)
 
-            images_dict[(title, category)] = {
-                "date": current.isoformat(),
-                "image_url": entry.get("hdurl") or entry.get("url", ""),
-                "explanation": explanation,
-                "topics": topics,
-                "year": current.year,
-            }
-            if category not in categories:
-                categories.append(category)
-
-        # NASA's rate limit is generous but be a polite citizen
-        time.sleep(0.2)
-        current += timedelta(days=1)
+        images_dict[(title, category)] = {
+            "date": post_date.isoformat(),
+            "image_url": parsed["url"],
+            "explanation": explanation,
+            "topics": topics,
+            "year": post_date.year,
+        }
+        if category not in categories:
+            categories.append(category)
+        
+        time.sleep(0.05)  # Be polite to the API
 
     return images_dict, categories
 

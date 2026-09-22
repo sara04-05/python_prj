@@ -1,22 +1,27 @@
 import sqlite3
 
 
+# Function to establish a connection to the SQLite database
 def get_db_connection():
     conn = sqlite3.connect('apod.db')
-    conn.row_factory = sqlite3.Row  # rows behave like dictionaries
+    conn.row_factory = sqlite3.Row  # This allows the rows returned to behave like dictionaries
     return conn
 
 
 def create_database():
+    # Set up the SQLite database
     conn = sqlite3.connect('apod.db')
     cursor = conn.cursor()
 
+    # Create a table to store category information
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE
         )
     ''')
+    
+    # Create a table to store image information
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS images (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,12 +42,15 @@ def create_database():
 
 def insert_categories(categories, cursor):
     category_ids = {}
+
     for category in categories:
         cursor.execute('''
-            INSERT OR IGNORE INTO categories (name) VALUES (?)
+            INSERT OR IGNORE INTO categories (name)
+            VALUES (?)
         ''', (category,))
         cursor.execute('SELECT id FROM categories WHERE name = ?', (category,))
         category_ids[category] = cursor.fetchone()[0]
+
     return category_ids
 
 
