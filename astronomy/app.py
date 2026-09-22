@@ -1,7 +1,9 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import date, datetime
+from html import unescape
+import re
 import plotly.express as px
 from dotenv import load_dotenv
 import os
@@ -16,13 +18,201 @@ except ImportError:
 AUTH_API_KEY = os.getenv('API_KEY') or LOCAL_API_KEY
 
 # Set page config
-st.set_page_config(page_title="APOD Personal Gallery", layout="wide")
+st.set_page_config(page_title="Astronomy Picture of the Day", layout="wide")
 
 
 def api_headers():
     if AUTH_API_KEY:
         return {"api-key": AUTH_API_KEY}
     return None
+
+
+APOD_API_URL = "https://science.nasa.gov/wp-json/wp/v2/apod-basic/"
+APOD_PAGE_SIZE = 100
+
+
+def clean_html_text(value):
+    text = re.sub(r"<[^>]+>", " ", value or "")
+    text = unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def get_post_value(post, key, nested_key=None, default=""):
+    value = post.get(key, default)
+    if nested_key and isinstance(value, dict):
+        value = value.get(nested_key, default)
+    return value if value is not None else default
+
+
+def normalize_apod_post(post):
+    title = clean_html_text(get_post_value(post, "title", "rendered", "Untitled")) or "Untitled"
+    content = get_post_value(post, "content", "rendered", "")
+    explanation = clean_html_text(content)
+
+    media_url = post.get("featured_media_src_url")
+    if not media_url:
+        media_url = get_post_value(post, "better_featured_image", "source_url", "")
+
+    if not media_url and post.get("media_type") == "image":
+        match = re.search(r'src=["\"]([^"\"]+)["\"]', content)
+        if match:
+            media_url = match.group(1)
+
+    media_type = post.get("media_type") or ("image" if media_url else "video")
+    if media_type == "video" and not media_url:
+        media_url = post.get("embed_url") or post.get("link") or ""
+
+    date_str = post.get("date_gmt") or post.get("date")
+    try:
+        entry_date = date.fromisoformat(date_str.split("T")[0]) if date_str else date.today()
+    except ValueError:
+        entry_date = date.today()
+
+    return {
+        "date": entry_date,
+        "title": title,
+        "explanation": explanation,
+        "media_url": media_url or "",
+        "media_type": media_type,
+        "credit": post.get("copyright") or post.get("credit_text") or "",
+        "source_link": post.get("link") or "",
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_apod_feed():
+    entries = []
+    seen_dates = set()
+    page = 1
+
+    while page <= 10:
+        try:
+            response = requests.get(
+                APOD_API_URL,
+                params={"per_page": APOD_PAGE_SIZE, "page": page},
+                timeout=20,
+            )
+        except requests.RequestException:
+            break
+
+        if response.status_code != 200:
+            break
+
+        payload = response.json()
+        if not isinstance(payload, list) or not payload:
+            break
+
+        for post in payload:
+            entry = normalize_apod_post(post)
+            entry_key = entry["date"].isoformat()
+            if entry_key in seen_dates:
+                continue
+            seen_dates.add(entry_key)
+            entries.append(entry)
+
+        if len(payload) < APOD_PAGE_SIZE:
+            break
+
+        page += 1
+
+    entries.sort(key=lambda item: item["date"], reverse=True)
+    return entries
+
+
+def build_apod_table(entries, search_text="", media_filter="All"):
+    search_text = search_text.strip().lower()
+    rows = []
+
+    for entry in entries:
+        haystack = " ".join(
+            [
+                entry["title"],
+                entry["explanation"],
+                entry["credit"],
+                entry["media_type"],
+            ]
+        ).lower()
+
+        if search_text and search_text not in haystack:
+            continue
+        if media_filter != "All" and entry["media_type"].lower() != media_filter.lower():
+            continue
+
+        rows.append(
+            {
+                "Date": entry["date"].isoformat(),
+                "Title": entry["title"],
+                "Media Type": entry["media_type"].title(),
+                "Credit": entry["credit"],
+                "Source": entry["source_link"],
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def apod_home_dashboard():
+    st.title("Astronomy Picture of the Day")
+    st.markdown(
+        "Discover the cosmos! Each day a different image or photograph of our fascinating universe is featured, along with a brief explanation written by a professional astronomer."
+    )
+    st.divider()
+
+    entries = fetch_apod_feed()
+    if not entries:
+        st.warning("Unable to load the live APOD feed right now.")
+        return
+
+    newest_date = entries[0]["date"]
+    oldest_date = entries[-1]["date"]
+
+    search_col, stats_col = st.columns([2, 1])
+    with search_col:
+        selected_date = st.date_input(
+            "Search by day",
+            value=newest_date,
+            min_value=oldest_date,
+            max_value=newest_date,
+        )
+        selected_entry = next(
+            (entry for entry in entries if entry["date"] == selected_date),
+            entries[0],
+        )
+
+        st.markdown(f"### {selected_entry['date'].strftime('%Y %B %d')}")
+        st.markdown(f"## {selected_entry['title']}")
+
+        if selected_entry["media_type"].lower() == "video" and selected_entry["media_url"]:
+            st.video(selected_entry["media_url"])
+        elif selected_entry["media_url"]:
+            st.image(selected_entry["media_url"], use_container_width=True)
+
+        if selected_entry["credit"]:
+            st.caption(f"Image Credit: {selected_entry['credit']}")
+
+        st.write(selected_entry["explanation"])
+
+        if selected_entry["source_link"]:
+            st.markdown(f"[Open the APOD page]({selected_entry['source_link']})")
+
+    with stats_col:
+        st.metric("Available Days", len(entries))
+        st.metric("Newest Day", newest_date.isoformat())
+        st.metric("Oldest Day", oldest_date.isoformat())
+        st.metric("Media Type", selected_entry["media_type"].title())
+
+    st.divider()
+    st.subheader("Available APOD Days")
+    st.caption("This table shows the entries currently available from NASA's public APOD feed.")
+
+    table_search = st.text_input("Search titles, explanations, or credits")
+    media_filter = st.selectbox("Filter by media type", ["All", "image", "video"])
+
+    table_df = build_apod_table(entries, search_text=table_search, media_filter=media_filter)
+    if table_df.empty:
+        st.warning("No APOD entries match the current filters.")
+    else:
+        st.dataframe(table_df, use_container_width=True, hide_index=True)
 
 
 # ---------- Categories ----------
@@ -505,11 +695,6 @@ def archive_dashboard():
                     st.session_state.selected_image_id = row['id']
 
 
-# Main app logic
-st.title("🌌 APOD Personal Gallery")
-st.markdown("*Daily images from NASA's Astronomy Picture of the Day — rate, categorize, and build your personal favorites collection*")
-st.divider()
-
 if not AUTH_API_KEY:
     st.warning("⚠️ No API key found. Add your key to `.env` or `astronomy/api_key.py` to enable image management.")
 
@@ -519,12 +704,15 @@ with st.sidebar:
     st.title("📍 Navigation")
     page = st.radio(
         "Choose a view",
-        ["⭐ Favorites", "📚 Archive", "🛠️ Manage", "📚 Categories"],
-        help="Explore your personal astronomy collection"
+        ["🏠 APOD Home", "⭐ Favorites", "📚 Archive", "🛠️ Manage", "📚 Categories"],
+        help="Explore NASA's APOD feed and your personal archive"
     )
 
 # Render selected page
-if page == "⭐ Favorites":
+if page == "🏠 APOD Home":
+    apod_home_dashboard()
+
+elif page == "⭐ Favorites":
     favorites_gallery()
 
 elif page == "📚 Archive":

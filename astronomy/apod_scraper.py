@@ -77,6 +77,13 @@ def extract_topics(title, explanation):
     return topics or ["Uncategorized"]
 
 
+def get_post_value(post, key, nested_key=None, default=""):
+    value = post.get(key, default)
+    if nested_key and isinstance(value, dict):
+        value = value.get(nested_key, default)
+    return value if value is not None else default
+
+
 def fetch_apod_wordpress():
     """Fetch APOD entries from NASA's WordPress API.
     Returns a list of entries."""
@@ -95,16 +102,16 @@ def parse_wordpress_apod(post):
     """Parse a single WordPress APOD post into our format.
     Returns dict with title, explanation, url, date, or None if invalid."""
     try:
-        title = post.get("title", {}).get("rendered", "Untitled").strip()
-        content = post.get("content", {}).get("rendered", "")
+        title = str(get_post_value(post, "title", "rendered", "Untitled")).strip()
+        content = get_post_value(post, "content", "rendered", "")
         explanation = content
         
         # Find featured image URL
         image_url = None
         if post.get("featured_media_src_url"):
             image_url = post.get("featured_media_src_url")
-        elif post.get("better_featured_image", {}).get("source_url"):
-            image_url = post.get("better_featured_image", {}).get("source_url")
+        else:
+            image_url = get_post_value(post, "better_featured_image", "source_url", "")
         
         # Fallback: extract first image from content
         if not image_url and "<img" in content:
