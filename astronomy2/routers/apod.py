@@ -1,23 +1,40 @@
 import sqlite3
-from typing import List, Optional
+from typing import List, Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth.security import get_api_key
 from database import get_db_connection
 from models.apod import Apod, ApodCreate
-from nasa_fetcher import fetch_and_store_apod, _validate_date
+from nasa_fetcher import (
+    fetch_and_store_apod,
+    sync_historical_apods,
+    _validate_date,
+)
 
 
 router = APIRouter()
 
 
-@router.get("/", response_model=List[Apod])
-def list_apod_entries():
+@router.get("/", response_model=Union[List[Apod], Apod])
+def list_apod_entries(date: Optional[str] = Query(default=None)):
     """Return all saved APOD entries."""
     conn = get_db_connection()
     try:
-        rows = conn.execute("SELECT * FROM apod_entries ORDER BY date").fetchall()
+        if date is not None:
+            try:
+                _validate_date(date)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            rows = conn.execute(
+                "SELECT * FROM apod_entries WHERE date = ?", (date,)
+            ).fetchall()
+            if not rows:
+                raise HTTPException(status_code=404, detail="Entry not found")
+        else:
+            rows = conn.execute("SELECT * FROM apod_entries ORDER BY date").fetchall()
+        if date is not None:
+            return dict(rows[0])
         return [dict(row) for row in rows]
     finally:
         conn.close()
@@ -88,6 +105,19 @@ def fetch_apod_entry(date: Optional[str] = None):
     """Fetch an APOD entry from NASA and save it."""
     try:
         return fetch_and_store_apod(date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.post("/sync", dependencies=[Depends(get_api_key)])
+def sync_apod_entries(start_date: Optional[str] = Query(default=None)):
+    """Fill missing APOD entries from today through 2000-01-01."""
+    try:
+        if start_date is not None:
+            _validate_date(start_date)
+        return sync_historical_apods(start_date)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
