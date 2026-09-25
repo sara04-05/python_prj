@@ -25,6 +25,25 @@ def fetch_apod(date=None):
     response.raise_for_status()
     data = response.json()
 
+    # The API can return a list of entries.
+    if isinstance(data, list):
+        if not data:
+            raise RuntimeError("NASA APOD response did not contain an entry.")
+
+        if date:
+            matching_entries = [
+                entry for entry in data
+                if isinstance(entry, dict) and entry.get("date") == date
+            ]
+            if not matching_entries:
+                raise RuntimeError(f"No APOD was found for {date}.")
+            data = matching_entries[0]
+        else:
+            data = data[0]
+
+    if not isinstance(data, dict):
+        raise RuntimeError("NASA APOD response has an unexpected format.")
+
     return {
         "date": data["date"],
         "title": data["title"],

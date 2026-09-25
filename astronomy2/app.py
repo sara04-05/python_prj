@@ -29,9 +29,11 @@ def get_apod_entry(selected_date):
     response = requests.get(f"{BASE_URL}/apod/{date_text}", timeout=10)
 
     if response.status_code == 404:
+        api_key = os.getenv("API_KEYS")
         fetch_response = requests.post(
             f"{BASE_URL}/apod/fetch",
             params={"date": date_text},
+            headers={"api-key": api_key} if api_key else {},
             timeout=30,
         )
         if fetch_response.ok:
@@ -52,15 +54,20 @@ def get_apod_entry(selected_date):
 def display_apod(apod):
     """Display one APOD in the same order as the NASA APOD page."""
     st.header(apod["title"])
-    st.write(apod["date"])
+    st.write(f"Date: {apod['date']}")
 
-    if apod.get("media_type") == "video":
-        st.video(apod["url"])
+    media_url = apod.get("url")
+    if not media_url:
+        st.warning("This APOD does not have a media URL.")
+    elif apod.get("media_type") == "video":
+        st.video(media_url)
     else:
-      st.image(apod["hdurl"] or apod["url"], use_container_width=True)
+        st.image(media_url, use_container_width=True)
+
+    st.subheader("Explanation")
     st.write(apod.get("explanation", ""))
     if apod.get("copyright"):
-        st.caption(f"Credit: {apod['copyright']}")
+        st.caption(f"Copyright: {apod['copyright']}")
 
 
 def show_public_view():
@@ -211,17 +218,21 @@ def show_admin_view(api_key):
             except requests.RequestException:
                 st.error("Could not connect to the backend.")
 
-    if st.button("Fetch Today from NASA"):
+    fetch_date = st.date_input("Date to fetch", value=date.today(), key="fetch_date")
+    if st.button("Fetch from NASA"):
         try:
             fetch_response = requests.post(
-                f"{BASE_URL}/apod/fetch", headers=headers, timeout=30
+                f"{BASE_URL}/apod/fetch",
+                params={"date": fetch_date.isoformat()},
+                headers=headers,
+                timeout=30,
             )
             if fetch_response.ok:
-                st.success("Today's picture was fetched from NASA.")
+                st.success("APOD fetched from NASA.")
                 st.rerun()
             else:
                 st.error(
-                    f"Could not fetch today's picture "
+                    f"Could not fetch the APOD "
                     f"(status {fetch_response.status_code})."
                 )
         except requests.RequestException:
@@ -231,9 +242,9 @@ def show_admin_view(api_key):
 st.set_page_config(page_title="Astronomy Picture of the Day")
 st.title("Astronomy Picture of the Day")
 
-view = st.sidebar.selectbox("View", ["Today's Picture", "Admin"])
+view = st.sidebar.selectbox("View", ["APOD", "Admin"])
 
-if view == "Today's Picture":
+if view == "APOD":
     show_public_view()
 else:
     api_key = st.sidebar.text_input("API key", type="password")
