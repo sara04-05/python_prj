@@ -4,7 +4,7 @@ from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth.security import get_api_key
-from database import get_db_connection
+from database import get_apod_entries, get_db_connection
 from models.apod import Apod, ApodCreate
 from nasa_fetcher import (
     fetch_and_store_apod,
@@ -14,6 +14,26 @@ from nasa_fetcher import (
 
 
 router = APIRouter()
+
+
+@router.get("/entries", response_model=List[Apod])
+def list_apod_entries_for_album(
+    year: Optional[int] = Query(default=None, ge=1, le=9999),
+    month: Optional[int] = Query(default=None, ge=1, le=12),
+    search: Optional[str] = Query(default=None, min_length=1),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    sort: str = Query(default="desc", pattern="^(asc|desc)$"),
+):
+    """Return a paginated view of locally stored APOD entries."""
+    return get_apod_entries(
+        year=year,
+        month=month,
+        search=search,
+        limit=page_size,
+        offset=(page - 1) * page_size,
+        descending=sort == "desc",
+    )
 
 
 @router.get("/", response_model=Union[List[Apod], Apod])
