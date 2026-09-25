@@ -2,6 +2,8 @@ import os
 from datetime import date
 
 import requests
+from astronomy2.models import apod
+from astronomy2.routers import apod
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -58,8 +60,7 @@ def display_apod(apod):
     if apod.get("media_type") == "video":
         st.video(apod["url"])
     else:
-        st.image(apod["hdurl"] or apod["url"], use_column_width=True)
-
+      st.image(apod["hdurl"] or apod["url"], use_container_width=True)
     st.write(apod.get("explanation", ""))
     if apod.get("copyright"):
         st.caption(f"Credit: {apod['copyright']}")

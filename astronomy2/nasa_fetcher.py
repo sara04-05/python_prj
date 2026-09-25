@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from database import get_db_connection
 
 
-NASA_APOD_URL = "https://api.nasa.gov/planetary/apod"
+NASA_APOD_URL = "https://science.nasa.gov/wp-json/wp/v2/apod-basic"
 
 load_dotenv()
 
