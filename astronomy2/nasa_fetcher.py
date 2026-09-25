@@ -1,4 +1,6 @@
 import os
+from datetime import date as date_type
+from html.parser import HTMLParser
 
 import requests
 from dotenv import load_dotenv
@@ -6,48 +8,72 @@ from dotenv import load_dotenv
 from database import get_db_connection
 
 
-NASA_APOD_URL = "https://science.nasa.gov/wp-json/wp/v2/apod-basic"
+NASA_APOD_URL = "https://api.nasa.gov/planetary/apod"
 
 load_dotenv()
 
 
+class _ExplanationParser(HTMLParser):
+    """Extract readable text while preserving the explanation's content."""
+
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+    def text(self):
+        return "".join(self.parts)
+
+
+def _validate_date(date):
+    if date is None:
+        return
+
+    try:
+        parsed_date = date_type.fromisoformat(date)
+    except (TypeError, ValueError):
+        raise ValueError("Date must be in YYYY-MM-DD format.")
+
+    if parsed_date.isoformat() != date:
+        raise ValueError("Date must be in YYYY-MM-DD format.")
+    if parsed_date > date_type.today():
+        raise ValueError("Future APOD dates are not available.")
+
+
+def _clean_explanation(explanation):
+    parser = _ExplanationParser()
+    parser.feed(explanation)
+    parser.close()
+    return parser.text()
+
+
 def fetch_apod(date=None):
-    """Fetch one APOD entry from NASA."""
+    """Fetch one APOD entry from NASA for the requested date."""
+    _validate_date(date)
+
     api_key = os.getenv("NASA_API_KEY")
     if not api_key:
-        raise RuntimeError("NASA_API_KEY is not set in the environment.")
+        raise RuntimeError("NASA_API_KEY is missing from .env")
 
     params = {"api_key": api_key}
     if date:
         params["date"] = date
 
-    response = requests.get(NASA_APOD_URL, params=params)
+    response = requests.get(NASA_APOD_URL, params=params, timeout=30)
     response.raise_for_status()
     data = response.json()
 
-    # The API can return a list of entries.
-    if isinstance(data, list):
-        if not data:
-            raise RuntimeError("NASA APOD response did not contain an entry.")
-
-        if date:
-            matching_entries = [
-                entry for entry in data
-                if isinstance(entry, dict) and entry.get("date") == date
-            ]
-            if not matching_entries:
-                raise RuntimeError(f"No APOD was found for {date}.")
-            data = matching_entries[0]
-        else:
-            data = data[0]
-
     if not isinstance(data, dict):
-        raise RuntimeError("NASA APOD response has an unexpected format.")
+        raise RuntimeError("NASA APOD returned an invalid response.")
+    if date and data.get("date") != date:
+        raise RuntimeError(f"NASA APOD returned the wrong date for {date}.")
 
     return {
         "date": data["date"],
         "title": data["title"],
-        "explanation": data["explanation"],
+        "explanation": _clean_explanation(data["explanation"]),
         "url": data["url"],
         "hdurl": data.get("hdurl"),
         "media_type": data["media_type"],

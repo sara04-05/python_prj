@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth.security import get_api_key
 from database import get_db_connection
 from models.apod import Apod, ApodCreate
-from nasa_fetcher import fetch_and_store_apod
+from nasa_fetcher import fetch_and_store_apod, _validate_date
 
 
 router = APIRouter()
@@ -26,6 +26,11 @@ def list_apod_entries():
 @router.get("/{date}", response_model=Apod)
 def get_apod_entry(date: str):
     """Return one APOD entry by date."""
+    try:
+        _validate_date(date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -34,10 +39,15 @@ def get_apod_entry(date: str):
     finally:
         conn.close()
 
-    if row is None:
-        raise HTTPException(status_code=404, detail="Entry not found")
+    if row is not None:
+        return dict(row)
 
-    return dict(row)
+    try:
+        return fetch_and_store_apod(date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @router.post("/", response_model=Apod, dependencies=[Depends(get_api_key)])
@@ -76,7 +86,12 @@ def create_apod_entry(apod: ApodCreate):
 @router.post("/fetch", response_model=Apod, dependencies=[Depends(get_api_key)])
 def fetch_apod_entry(date: Optional[str] = None):
     """Fetch an APOD entry from NASA and save it."""
-    return fetch_and_store_apod(date)
+    try:
+        return fetch_and_store_apod(date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @router.put("/{id}", response_model=Apod, dependencies=[Depends(get_api_key)])

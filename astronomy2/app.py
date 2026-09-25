@@ -1,13 +1,52 @@
 import streamlit as st
 import requests
-import pandas as pd
-from datetime import datetime, date
+from datetime import date
+from html.parser import HTMLParser
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
 BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8000/api").rstrip("/")
+
+
+class _ExplanationParser(HTMLParser):
+    """Convert APOD explanation markup into readable Streamlit markdown."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self._link_href = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            href = dict(attrs).get("href")
+            self._link_href = href
+            self.parts.append("[")
+        elif tag in {"br", "p", "div"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            if self._link_href:
+                self.parts.append(f"]({self._link_href})")
+            else:
+                self.parts.append("]")
+            self._link_href = None
+        elif tag in {"p", "div"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+
+def clean_explanation(explanation):
+    """Remove HTML tags while preserving readable text and simple links."""
+    parser = _ExplanationParser()
+    parser.feed(explanation or "")
+    parser.close()
+    lines = [" ".join(line.split()) for line in "".join(parser.parts).splitlines()]
+    return "\n\n".join(line for line in lines if line)
 
 
 def validate_api_key(api_key):
@@ -56,23 +95,32 @@ def display_apod(apod):
     st.header(apod["title"])
     st.write(f"Date: {apod['date']}")
 
-    media_url = apod.get("url")
-    if not media_url:
-        st.warning("This APOD does not have a media URL.")
-    elif apod.get("media_type") == "video":
-        st.video(media_url)
+    if apod.get("media_type") == "video":
+        video_url = apod.get("url")
+        if video_url:
+            st.video(video_url)
+        else:
+            st.warning("This APOD does not have a media URL.")
     else:
-        st.image(media_url, use_container_width=True)
+        image_url = apod.get("url")
+        if image_url:
+            st.image(image_url, use_container_width=True)
+        else:
+            st.warning("No image URL is available for this APOD.")
 
     st.subheader("Explanation")
-    st.write(apod.get("explanation", ""))
+    st.markdown(clean_explanation(apod.get("explanation", "")), unsafe_allow_html=False)
     if apod.get("copyright"):
         st.caption(f"Copyright: {apod['copyright']}")
 
 
 def show_public_view():
     """Show the public daily-picture view."""
-    selected_date = st.date_input("Choose a date", value=date.today())
+    selected_date = st.date_input(
+        "Choose a date",
+        value=date.today(),
+        max_value=date.today(),
+    )
 
     try:
         apod = get_apod_entry(selected_date)
@@ -218,7 +266,12 @@ def show_admin_view(api_key):
             except requests.RequestException:
                 st.error("Could not connect to the backend.")
 
-    fetch_date = st.date_input("Date to fetch", value=date.today(), key="fetch_date")
+    fetch_date = st.date_input(
+        "Date to fetch",
+        value=date.today(),
+        max_value=date.today(),
+        key="fetch_date",
+    )
     if st.button("Fetch from NASA"):
         try:
             fetch_response = requests.post(
