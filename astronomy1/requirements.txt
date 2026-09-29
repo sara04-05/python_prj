@@ -1,7 +1,9 @@
 fastapi
 uvicorn
-streamlit
+streamlit>=1.46
 requests
-pydantic
+pydantic>=2
 python-dotenv
 pandas
+pytest
+httpx

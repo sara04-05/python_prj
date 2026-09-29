@@ -1,10 +1,30 @@
+import os
 import sqlite3
 from typing import Optional
+
+from dotenv import load_dotenv
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+
+def get_database_path():
+    """Return the SQLite file path, resolved relative to this folder.
+
+    Resolving against this file (not the current working directory) means the
+    API, the tests and the scripts all use the same database no matter where
+    they are started from.
+    """
+    path = os.getenv("DATABASE_URL", "astronomy.db")
+    if path.startswith("sqlite:///"):
+        path = path[len("sqlite:///"):]
+    return path if os.path.isabs(path) else os.path.join(BASE_DIR, path)
 
 
 def get_db_connection():
     """Return a connection to the SQLite database."""
-    conn = sqlite3.connect("astronomy.db")
+    conn = sqlite3.connect(get_database_path())
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -54,24 +74,24 @@ def get_apod_entries(
 def create_database():
     """Create the APOD table if it does not already exist."""
     conn = get_db_connection()
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS apod_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT UNIQUE NOT NULL,
-            title TEXT NOT NULL,
-            explanation TEXT,
-            url TEXT,
-            hdurl TEXT,
-            media_type TEXT,
-            copyright TEXT
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS apod_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT UNIQUE NOT NULL,
+                title TEXT NOT NULL,
+                explanation TEXT,
+                url TEXT,
+                hdurl TEXT,
+                media_type TEXT,
+                copyright TEXT
+            )
+            """
         )
-        """
-    )
-
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
