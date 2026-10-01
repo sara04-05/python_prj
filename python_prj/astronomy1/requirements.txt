@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+streamlit
+requests
+pydantic>=2
+python-dotenv
+pandas
+pytest
+httpx
