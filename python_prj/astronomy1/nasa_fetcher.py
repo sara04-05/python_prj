@@ -76,10 +76,8 @@ def _validate_date(date):
 
 
 def _get_api_key():
-    api_key = os.getenv("NASA_API_KEY")
-    if not api_key:
-        raise RuntimeError("NASA_API_KEY is missing from .env")
-    return api_key
+    """Return the optional NASA key; science.nasa.gov works without one."""
+    return os.getenv("NASA_API_KEY", "").strip() or None
 
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".tif", ".tiff")
@@ -144,10 +142,14 @@ def _nasa_get(path="", params=None):
     Network problems are turned into short RuntimeErrors so the API can answer
     quickly with a clear message instead of hanging until the client gives up.
     """
+    query = dict(params or {})
+    api_key = _get_api_key()
+    if api_key:
+        query = {"api_key": api_key, **query}
     try:
         response = requests.get(
             NASA_APOD_URL + path,
-            params={"api_key": _get_api_key(), **(params or {})},
+            params=query,
             headers=REQUEST_HEADERS,
             timeout=REQUEST_TIMEOUT,
         )
@@ -327,7 +329,6 @@ def sync_historical_apods(start_date=None, end_date=None):
     pagination is used as the range mechanism. Each request returns up to 25
     APODs, keeping the request count in the hundreds rather than thousands.
     """
-    _get_api_key()
     target_date = (
         _validate_date(start_date) if start_date is not None else EARLIEST_APOD_DATE
     )

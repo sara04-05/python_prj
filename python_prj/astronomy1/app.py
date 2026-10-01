@@ -279,7 +279,7 @@ def show_public_view():
     if "selected_date" not in st.session_state:
         st.session_state.selected_date = date.today()
 
-    picker, previous_day, next_day, surprise = columns([3, 1, 1, 1], vertical_alignment="bottom")
+    picker, previous_day, next_day, surprise = columns([2, 1, 1, 1], vertical_alignment="bottom")
     picker.date_input(
         "Choose a date",
         min_value=EARLIEST_APOD_DATE,
@@ -287,7 +287,7 @@ def show_public_view():
         key="selected_date",
     )
     previous_day.button(
-        "◀ Previous",
+        "◀ Prev",
         on_click=_shift_selected_date,
         args=(-1,),
         **full_width(st.button),
@@ -300,7 +300,7 @@ def show_public_view():
         **full_width(st.button),
         disabled=st.session_state.selected_date >= date.today(),
     )
-    surprise.button("🎲 Surprise me", on_click=_random_selected_date, **full_width(st.button))
+    surprise.button("🎲 Random", on_click=_random_selected_date, **full_width(st.button))
 
     try:
         with st.spinner("Looking up that day's picture..."):
